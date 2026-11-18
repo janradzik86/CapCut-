@@ -1,0 +1,69 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "app.clipforge.editor"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "app.clipforge.editor"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    def ksFile = rootProject.file('keystore.properties')
+    def ks = new Properties()
+    if (ksFile.exists()) ks.load(new FileInputStream(ksFile))
+    signingConfigs {
+        release {
+            def path = System.getenv('CF_KEYSTORE') ?: ks.getProperty('storeFile')
+            if (path) {
+                storeFile rootProject.file(path.startsWith("../") ? path.substring(3) : path)
+                storePassword System.getenv('CF_KEYSTORE_PASSWORD') ?: ks.getProperty('storePassword')
+                keyAlias System.getenv('CF_KEY_ALIAS') ?: ks.getProperty('keyAlias')
+                keyPassword System.getenv('CF_KEY_PASSWORD') ?: ks.getProperty('keyPassword')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (signingConfigs.release.storeFile) signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

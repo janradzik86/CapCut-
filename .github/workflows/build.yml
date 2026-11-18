@@ -1,0 +1,65 @@
+name: Build APK & Windows Setup
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: android-actions/setup-android@v3
+      - run: npm install --ignore-scripts
+      - run: npx cap sync android
+      - name: Keystore (secret or temporary)
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > android/release.keystore
+            printf 'storeFile=../release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" "${{ secrets.ANDROID_KEY_ALIAS }}" "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" > android/keystore.properties
+          else
+            keytool -genkeypair -keystore android/release.keystore -alias clipforge -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass clipforge123 -keypass clipforge123 -dname "CN=ClipForge, O=ClipForge, C=PL"
+            printf 'storeFile=../release.keystore\nstorePassword=clipforge123\nkeyAlias=clipforge\nkeyPassword=clipforge123\n' > android/keystore.properties
+          fi
+      - run: cd android && chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+      - run: mkdir -p out && cp android/app/build/outputs/apk/release/app-release.apk out/ClipForge-release.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: ClipForge-android, path: out/*.apk }
+
+  windows-electron:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install
+      - run: npx electron-builder --win nsis --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with: { name: ClipForge-windows-electron, path: dist/electron/*.exe }
+
+  windows-lite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y nsis mingw-w64
+      - run: rm -f dist/*.exe && bash windows-lite/build.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: ClipForge-windows-lite, path: dist/ClipForge-Setup-*.exe }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [android, windows-electron, windows-lite]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with: { files: artifacts/* }

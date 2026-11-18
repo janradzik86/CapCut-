@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0e0f13">
+<title>ClipForge</title>
+<link rel="icon" href="icons/icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ HOME ============ -->
+<section id="home" class="screen active">
+  <header class="home-head">
+    <div class="brand"><img src="icons/icon.svg" alt=""><span>ClipForge</span></div>
+    <span class="muted small">Edytor wideo</span>
+  </header>
+  <button id="newProject" class="hero-btn">
+    <span class="plus">+</span>
+    <span><b>Nowy projekt</b><br><span class="muted small">Importuj wideo, zdjęcia i muzykę</span></span>
+  </button>
+  <div class="quick">
+    <button data-aspect="9:16" class="qa">9:16<br><span>Pion</span></button>
+    <button data-aspect="16:9" class="qa">16:9<br><span>Poziom</span></button>
+    <button data-aspect="1:1" class="qa">1:1<br><span>Kwadrat</span></button>
+    <button data-aspect="4:5" class="qa">4:5<br><span>Post</span></button>
+  </div>
+  <h3 class="section-title">Moje projekty</h3>
+  <div id="projectList" class="project-list"></div>
+  <p id="noProjects" class="muted center">Brak projektów. Utwórz pierwszy!</p>
+</section>
+
+<!-- ============ EDITOR ============ -->
+<section id="editor" class="screen">
+  <header class="ed-head">
+    <button id="btnBack" class="icon-btn" title="Wróć">&#x2039;</button>
+    <input id="projName" class="proj-name" value="Projekt">
+    <div class="spacer"></div>
+    <button id="btnUndo" class="icon-btn" title="Cofnij (Ctrl+Z)">&#x21B6;</button>
+    <button id="btnRedo" class="icon-btn" title="Ponów (Ctrl+Y)">&#x21B7;</button>
+    <button id="btnExport" class="export-btn">Eksportuj</button>
+  </header>
+
+  <div class="stage-wrap" id="stageWrap">
+    <canvas id="stage"></canvas>
+    <div id="dropHint" class="drop-hint">Upuść pliki tutaj lub użyj „Dodaj”</div>
+  </div>
+
+  <div class="transport">
+    <span id="tCur" class="tc">00:00.0</span>
+    <span class="tc muted">/</span>
+    <span id="tDur" class="tc muted">00:00.0</span>
+    <div class="spacer"></div>
+    <button id="btnStart" class="icon-btn" title="Początek">&#x23EE;</button>
+    <button id="btnPlay" class="play-btn" title="Odtwórz (Spacja)">&#x25B6;</button>
+    <button id="btnEnd" class="icon-btn" title="Koniec">&#x23ED;</button>
+    <div class="spacer"></div>
+    <button id="zoomOut" class="icon-btn" title="Pomniejsz oś">&#x2212;</button>
+    <button id="zoomIn" class="icon-btn" title="Powiększ oś">+</button>
+  </div>
+
+  <div class="timeline" id="timeline">
+    <div class="tl-inner" id="tlInner">
+      <div class="ruler" id="ruler"></div>
+      <div class="track" data-track="text"><span class="track-label">T</span></div>
+      <div class="track" data-track="overlay"><span class="track-label">&#x29C9;</span></div>
+      <div class="track main" data-track="main"><span class="track-label">&#x25A3;</span></div>
+      <div class="track" data-track="audio"><span class="track-label">&#x266B;</span></div>
+      <div class="playhead" id="playhead"></div>
+    </div>
+  </div>
+
+  <nav class="toolbar" id="toolbar"></nav>
+
+  <div class="sheet" id="sheet">
+    <div class="sheet-head"><b id="sheetTitle"></b><button class="icon-btn" id="sheetClose">&#x2713;</button></div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+</section>
+
+<!-- Export overlay -->
+<div id="exportModal" class="modal">
+  <div class="modal-card">
+    <h3>Eksport wideo</h3>
+    <div id="exportSetup">
+      <label>Rozdzielczość
+        <select id="expRes"><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option></select>
+      </label>
+      <label>Klatki/s
+        <select id="expFps"><option>24</option><option selected>30</option><option>60</option></select>
+      </label>
+      <label>Jakość
+        <select id="expBitrate"><option value="4">Standard</option><option value="8" selected>Wysoka</option><option value="16">Najwyższa</option></select>
+      </label>
+      <div class="row"><button class="ghost" id="expCancel">Anuluj</button><button class="export-btn" id="expGo">Start</button></div>
+    </div>
+    <div id="exportRun" hidden>
+      <div class="progress"><div id="expBar"></div></div>
+      <p id="expMsg" class="muted center">Renderowanie…</p>
+      <div class="row"><button class="ghost" id="expAbort">Przerwij</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<input type="file" id="fileMedia" accept="video/*,image/*,audio/*" multiple hidden>
+<input type="file" id="fileAudio" accept="audio/*,video/*" multiple hidden>
+<input type="file" id="fileOverlay" accept="video/*,image/*" multiple hidden>
+
+<script src="app.js"></script>
+</body>
+</html>

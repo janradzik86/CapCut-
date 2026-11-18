@@ -1,0 +1,6 @@
+{
+  "appId": "app.clipforge.editor",
+  "appName": "ClipForge",
+  "webDir": "www",
+  "android": { "allowMixedContent": false, "backgroundColor": "#0e0f13" }
+}

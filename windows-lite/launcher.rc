@@ -1,0 +1,22 @@
+1 ICON "../www/icons/icon.ico"
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "041504B0"
+    BEGIN
+      VALUE "CompanyName", "ClipForge"
+      VALUE "FileDescription", "ClipForge Video Editor"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "ProductName", "ClipForge"
+      VALUE "ProductVersion", "1.0.0"
+      VALUE "OriginalFilename", "ClipForge.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x415, 1200
+  END
+END
