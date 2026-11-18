@@ -1,12 +1,63 @@
-name: Build APK & Windows Setup
+name: Build, test & release (APK + Windows Setup)
 
 on:
   workflow_dispatch:
   push:
+    branches: ['claude/**', 'main', 'master']
     tags: ['v*']
 
+env:
+  APP_VERSION: 2.0.0
+  WHISPER_MODEL: whisper-base
+
 jobs:
+  # ------------------------------------------------------------------ AI engines + models
+  ai-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - run: bash scripts/fetch-ai.sh
+      - name: Verify Whisper model is bundled
+        run: |
+          cat www/ai/models/manifest.json
+          grep -q '"whisper":"' www/ai/models/manifest.json
+          du -sh www/ai/models/*
+      - uses: actions/upload-artifact@v4
+        with: { name: ai-assets, path: www/ai, retention-days: 7 }
+
+  # ------------------------------------------------------------------ browser E2E (Linux Chromium)
+  test-web:
+    needs: ai-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/download-artifact@v4
+        with: { name: ai-assets, path: www/ai }
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - run: npm install --no-save playwright@1.56.1 && npx playwright install --with-deps chromium
+      - run: bash tests/make-assets.sh www/_test
+      - name: E2E (fit-to-audio, AI vision, export, Whisper captions)
+        run: |
+          (cd www && python3 -m http.server 8123 >/dev/null 2>&1 &)
+          sleep 2
+          node tests/e2e.js http://localhost:8123/ _test/ out --whisper
+      - name: Verify exported file
+        run: |
+          ffprobe -v error -show_entries format=duration:stream=codec_name,width,height,nb_frames -of compact out/export.*
+          test "$(ffprobe -v error -select_streams v -show_entries stream=nb_frames -of csv=p=0 out/export.*)" = "360"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: test-web-output, path: out, retention-days: 7 }
+
+  # ------------------------------------------------------------------ Android APK
   android:
+    needs: ai-assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,51 +66,140 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
       - uses: android-actions/setup-android@v3
-      - run: npm install --ignore-scripts
-      - run: npx cap sync android
-      - name: Keystore (secret or temporary)
+      - uses: actions/download-artifact@v4
+        with: { name: ai-assets, path: www/ai }
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - run: rm -rf www/_test && npx cap sync android
+      - name: Signing key (repository secret or temporary)
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
-            echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > android/release.keystore
-            printf 'storeFile=../release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
-              "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" "${{ secrets.ANDROID_KEY_ALIAS }}" "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" > android/keystore.properties
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > android/release.keystore
+            printf 'storeFile=../release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' "$KS_PASS" "$KS_ALIAS" "$KS_PASS" > android/keystore.properties
           else
             keytool -genkeypair -keystore android/release.keystore -alias clipforge -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass clipforge123 -keypass clipforge123 -dname "CN=ClipForge, O=ClipForge, C=PL"
             printf 'storeFile=../release.keystore\nstorePassword=clipforge123\nkeyAlias=clipforge\nkeyPassword=clipforge123\n' > android/keystore.properties
           fi
       - run: cd android && chmod +x gradlew && ./gradlew assembleRelease --no-daemon
-      - run: mkdir -p out && cp android/app/build/outputs/apk/release/app-release.apk out/ClipForge-release.apk
+      - name: Verify APK (signature, AI models, native saver)
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          $ANDROID_HOME/build-tools/*/apksigner verify --print-certs "$APK" | head -2 || "$(ls -d $ANDROID_HOME/build-tools/* | tail -1)/apksigner" verify "$APK"
+          unzip -l "$APK" | grep -E "assets/public/ai/models/.*(onnx|tflite|task)"
+          unzip -l "$APK" | grep -q "decoder_model_merged_quantized.onnx"
+          mkdir -p out && cp "$APK" "out/ClipForge-${APP_VERSION}-release.apk" && ls -la out
       - uses: actions/upload-artifact@v4
         with: { name: ClipForge-android, path: out/*.apk }
 
-  windows-electron:
+  # ------------------------------------------------------------------ Windows installer
+  windows-setup:
+    needs: ai-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: ai-assets, path: www/ai }
+      - run: sudo apt-get update && sudo apt-get install -y nsis mingw-w64
+      - run: rm -rf www/_test dist/*.exe && bash windows-lite/build.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: ClipForge-windows, path: dist/ClipForge-Setup-*.exe }
+
+  # ------------------------------------------------------------------ real Windows: install + run + export + save
+  windows-e2e:
+    needs: [windows-setup, test-web]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: npm install
-      - run: npx electron-builder --win nsis --x64 --publish never
+      - uses: actions/download-artifact@v4
+        with: { name: ClipForge-windows, path: setup }
+      - name: Silent install
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem setup\ClipForge-Setup-*.exe | Select-Object -First 1
+          Start-Process $exe.FullName -ArgumentList '/S' -Wait
+          $dir = "$env:LOCALAPPDATA\Programs\ClipForge"
+          if (!(Test-Path "$dir\ClipForge.exe") -or !(Test-Path "$dir\app\index.html") -or !(Test-Path "$dir\app\ai\models\manifest.json")) { throw "install incomplete" }
+          Get-ChildItem "$dir\app\ai\models" -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+          if (!(Test-Path "$env:USERPROFILE\Desktop\ClipForge.lnk") -and !(Test-Path "$env:PUBLIC\Desktop\ClipForge.lnk")) { Write-Warning "desktop shortcut not found" }
+      - name: Local app server checks
+        shell: pwsh
+        run: |
+          $dir = "$env:LOCALAPPDATA\Programs\ClipForge"
+          Start-Process "$dir\ClipForge.exe" -ArgumentList '--serve-only'
+          Start-Sleep 3
+          $r = Invoke-WebRequest http://127.0.0.1:47816/api/ping -UseBasicParsing; if ($r.Content -ne 'clipforge') { throw 'ping' }
+          $r = Invoke-WebRequest http://127.0.0.1:47816/ -UseBasicParsing
+          if ($r.Headers['Cross-Origin-Embedder-Policy'] -ne 'require-corp') { throw 'COEP header missing' }
+          $w = Invoke-WebRequest http://127.0.0.1:47816/ai/lib/ort-wasm-simd-threaded.jsep.wasm -UseBasicParsing
+          if ($w.Headers['Content-Type'] -ne 'application/wasm') { throw 'wasm mime' }
+          try { Invoke-WebRequest http://127.0.0.1:47816/ -Headers @{Host='evil.example'} -UseBasicParsing; throw 'host check failed' } catch { if ($_.Exception.Response.StatusCode.value__ -ne 403) { throw $_ } }
+          try { Invoke-WebRequest 'http://127.0.0.1:47816/api/save?name=x.mp4&mime=video/mp4' -Method Post -Body 'x' -UseBasicParsing; throw 'csrf check failed' } catch { if ($_.Exception.Response.StatusCode.value__ -ne 403) { throw $_ } }
+          $bytes = New-Object byte[] 25000000; (New-Object Random 7).NextBytes($bytes)
+          $s = Invoke-RestMethod 'http://127.0.0.1:47816/api/save?name=Test%20%C5%BC%C3%B3%C5%82w.mp4&mime=video%2Fmp4' -Method Post -Body $bytes -Headers @{'X-ClipForge'='1'} -ContentType 'application/octet-stream'
+          Write-Host "saved to $($s.path)"
+          $got = [IO.File]::ReadAllBytes($s.path); if ($got.Length -ne $bytes.Length) { throw 'size mismatch' }
+          for ($i = 0; $i -lt $bytes.Length; $i += 99991) { if ($got[$i] -ne $bytes[$i]) { throw 'content mismatch' } }
+          Remove-Item $s.path
+      - name: Test media
+        shell: bash
+        run: |
+          choco install -y ffmpeg imagemagick >/dev/null 2>&1 || true
+          mkdir -p "$LOCALAPPDATA/Programs/ClipForge/app/_test"
+          bash tests/make-assets.sh "$LOCALAPPDATA/Programs/ClipForge/app/_test"
+      - name: E2E in Microsoft Edge (installed app)
+        shell: bash
+        run: |
+          npm install --no-save playwright@1.56.1
+          node tests/e2e.js http://127.0.0.1:47816/ _test/ out --channel=msedge
+          cat out/export-result.txt
+      - name: Verify the video saved by the app in Videos\ClipForge
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem "$env:USERPROFILE\Videos\ClipForge\*.mp4" | Sort-Object LastWriteTime | Select-Object -Last 1
+          if (!$f) { throw 'exported video not found in Videos\ClipForge' }
+          Write-Host "$($f.FullName) $($f.Length) bytes"
+          ffprobe -v error -show_entries format=duration:stream=codec_name,width,height,nb_frames -of compact "$($f.FullName)"
+          $n = ffprobe -v error -select_streams v -show_entries stream=nb_frames -of csv=p=0 "$($f.FullName)"
+          if ([int]$n -ne 360) { throw "unexpected frame count $n" }
+          $a = ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "$($f.FullName)"
+          Write-Host "audio codec: $a"
+          New-Item -ItemType Directory -Force out | Out-Null; Copy-Item $f.FullName out\windows-export.mp4
+      - name: Silent uninstall
+        shell: pwsh
+        run: |
+          Get-Process ClipForge -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Process "$env:LOCALAPPDATA\Programs\ClipForge\Uninstall.exe" -ArgumentList '/S' -Wait
+          Start-Sleep 3
+          if (Test-Path "$env:LOCALAPPDATA\Programs\ClipForge\ClipForge.exe") { throw 'uninstall failed' }
       - uses: actions/upload-artifact@v4
-        with: { name: ClipForge-windows-electron, path: dist/electron/*.exe }
+        if: always()
+        with: { name: windows-e2e-output, path: out, retention-days: 7 }
 
-  windows-lite:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y nsis mingw-w64
-      - run: rm -f dist/*.exe && bash windows-lite/build.sh
-      - uses: actions/upload-artifact@v4
-        with: { name: ClipForge-windows-lite, path: dist/ClipForge-Setup-*.exe }
-
+  # ------------------------------------------------------------------ GitHub Release with both installers
   release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [android, windows-electron, windows-lite]
+    needs: [android, windows-setup, windows-e2e, test-web]
     runs-on: ubuntu-latest
     permissions: { contents: write }
     steps:
       - uses: actions/download-artifact@v4
-        with: { path: artifacts, merge-multiple: true }
+        with: { pattern: ClipForge-*, path: artifacts, merge-multiple: true }
+      - run: ls -la artifacts && sha256sum artifacts/* > artifacts/SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
-        with: { files: artifacts/* }
+        with:
+          tag_name: v${{ env.APP_VERSION }}-build.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: ClipForge ${{ env.APP_VERSION }} (build ${{ github.run_number }})
+          make_latest: true
+          body: |
+            ClipForge ${{ env.APP_VERSION }} — edytor wideo z silnikami AI działającymi offline.
+            * ClipForge-${{ env.APP_VERSION }}-release.apk — Android 6.0+ (podpisany)
+            * ClipForge-Setup-${{ env.APP_VERSION }}.exe — Windows 10/11 x64
+            Oba pakiety zawierają modele AI: Whisper (${{ env.WHISPER_MODEL }}), MediaPipe (segmentacja, siatka twarzy, detektor twarzy).
+            Zbudowane i przetestowane automatycznie (test E2E w Chromium/Linux i w Microsoft Edge/Windows).
+          files: artifacts/*
