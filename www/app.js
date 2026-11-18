@@ -65,7 +65,7 @@ let pps = 60;            // timeline pixels per second
 let undoStack = [], redoStack = [];
 let audioCtx = null, mixDest = null;
 const srcNodes = new WeakMap();
-let exporting = null;
+let exporting = null, renderRes = 0;
 
 const canvas = $('#stage'); const ctx = canvas.getContext('2d');
 
@@ -117,8 +117,8 @@ function probe(kind, url) {
   });
 }
 
-async function importFiles(files, target) {
-  if (!files.length) return;
+async function importFiles(files, target, noClip) {
+  const created = []; if (!files.length) return created;
   commit(); let added = 0;
   for (const f of files) {
     const kind = mediaKind(f); if (!kind) { toast('Nieobsługiwany plik: ' + f.name); continue; }
@@ -130,18 +130,20 @@ async function importFiles(files, target) {
     P.media.push(m);
     media.set(m.id, { url, img: info.img, blob: f });
     DB.put('blobs', f, m.id).catch(() => {});
+    if (noClip) { created.push(m); continue; }
     let track = target || (kind === 'audio' ? 'audio' : 'main');
     if (kind === 'audio') track = 'audio';
     const clip = baseClip(m, track);
     if (track !== 'main') clip.start = t;
-    P.clips.push(clip); added++;
+    P.clips.push(clip); added++; created.push(clip);
     if (track === 'overlay') { clip.scale = 0.45; clip.x = 0.22; clip.y = -0.25; }
   }
   if (added) { syncEls(); layoutMain(); refresh(); save(); toast('Dodano: ' + added); }
+  return created;
 }
 
 function baseClip(m, track) {
-  return { id: uid(), mediaId: m.id, track, start: 0, dur: m.duration, in: 0, speed: 1, volume: 1, filter: '', adj: { b: 1, c: 1, s: 1, h: 0, blur: 0, vig: 0 },
+  return { id: uid(), mediaId: m.id, track, start: 0, dur: m.duration, in: 0, speed: 1, volume: 1, filter: '', adj: { b: 1, c: 1, s: 1, h: 0, blur: 0, vig: 0, temp: 0 }, ai: { bg: 'none', style: 'none', retouch: { smooth: 0, bright: 0, eyes: 0 } },
     fadeIn: 0, fadeOut: 0, transition: 'none', x: 0, y: 0, scale: 1, rot: 0, opacity: 1, fit: 'contain', flipH: false, reverse: false };
 }
 
@@ -194,8 +196,8 @@ function srcTime(c, at) {
 
 /* ---------------- Rendering ---------------- */
 function setCanvasSize(base = null) {
-  const [aw, ah] = ASPECTS[P.aspect] || [9, 16];
-  const short = base || (exporting ? exporting.res : 720);
+  const [aw, ah] = P.aspect === 'orig' && P.customAspect ? P.customAspect : (ASPECTS[P.aspect] || [9, 16]);
+  const short = base || (exporting ? exporting.res : renderRes || 720);
   let w, h;
   if (aw <= ah) { w = short; h = Math.round(short * ah / aw); } else { h = short; w = Math.round(short * aw / ah); }
   w -= w % 2; h -= h % 2;
@@ -244,15 +246,28 @@ function drawVisual(c, at) {
   if (alpha <= 0) return;
   const fit = c.fit === 'cover' ? Math.max(W / s.w, H / s.h) : Math.min(W / s.w, H / s.h);
   const dw = s.w * fit * c.scale * tr.sc, dh = s.h * fit * c.scale * tr.sc;
+  let src = s.el;
+  if (window.CFAI && c.ai) { try { const out = window.CFAI.process(c, s.el, s.w, s.h, srcTime(c, at)); if (out) src = out; } catch (e) { console.warn(e); } }
+  let rx = 0, ry = 0;
+  if (c.reframe && c.reframe.length) {
+    const st = srcTime(c, at); const R = c.reframe; let i = R.findIndex(r => r[0] > st); if (i < 0) i = R.length; const a = R[Math.max(0, i - 1)], b = R[Math.min(R.length - 1, i)];
+    const k = b[0] === a[0] ? 0 : clamp((st - a[0]) / (b[0] - a[0]), 0, 1); const cx = a[1] + (b[1] - a[1]) * k, cy = a[2] + (b[2] - a[2]) * k;
+    rx = clamp((0.5 - cx) * dw, -(dw - W) / 2, (dw - W) / 2) || 0; ry = clamp((0.5 - cy) * dh, -Math.max(0, dh - H) / 2, Math.max(0, dh - H) / 2) || 0;
+  }
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.translate(W / 2 + (c.x + tr.dx) * W, H / 2 + (c.y + tr.dy) * H);
+  ctx.translate(W / 2 + (c.x + tr.dx) * W + rx, H / 2 + (c.y + tr.dy) * H + ry);
   ctx.rotate(c.rot * Math.PI / 180 + tr.rot);
   if (c.flipH) ctx.scale(-1, 1);
   let f = filterStr(c); if (tr.blur) f = (f === 'none' ? '' : f) + ` blur(${tr.blur}px)`;
   ctx.filter = f;
-  ctx.drawImage(s.el, -dw / 2, -dh / 2, dw, dh);
+  ctx.drawImage(src, -dw / 2, -dh / 2, dw, dh);
   ctx.filter = 'none';
+  if (c.adj && c.adj.temp) { ctx.save(); ctx.globalCompositeOperation = 'soft-light'; ctx.globalAlpha = alpha * Math.min(1, Math.abs(c.adj.temp)) * 0.7;
+    ctx.fillStyle = c.adj.temp > 0 ? '#ff9a3c' : '#3c8cff'; ctx.fillRect(-dw / 2, -dh / 2, dw, dh); ctx.restore(); }
+  if (c.ai && c.ai.light && c.ai.light.amt > 0) { const L = c.ai.light; ctx.save(); ctx.globalCompositeOperation = 'soft-light'; ctx.globalAlpha = alpha * L.amt;
+    const lx = L.x * dw, ly = L.y * dh, lr = L.r * Math.max(dw, dh); const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, lr);
+    g.addColorStop(0, '#fff6e8'); g.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = g; ctx.fillRect(-dw / 2, -dh / 2, dw, dh); ctx.restore(); }
   if (c.adj && c.adj.vig > 0) {
     const g = ctx.createRadialGradient(0, 0, Math.min(dw, dh) * 0.3, 0, 0, Math.max(dw, dh) * 0.7);
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${c.adj.vig})`);
@@ -306,7 +321,7 @@ function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.a
 function render(at) {
   setCanvasSize();
   const W = canvas.width, H = canvas.height;
-  ctx.fillStyle = P.bg; ctx.fillRect(0, 0, W, H);
+  if (P.bg === 'transparent') ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = P.bg; ctx.fillRect(0, 0, W, H); }
   const mains = mainClips().filter(c => active(c, at));
   if (P.bgBlur && mains[0]) drawBlurBg(mains[0]);
   for (const c of mains) drawVisual(c, at);
@@ -520,11 +535,17 @@ function buildToolbar() {
       tool('&#x25AD;', 'Format', sheetAspect),
       tool('&#x25D1;', 'Tło', sheetBg),
       tool('&#x2702;', 'Podziel', splitAtPlayhead),
+      tool('&#x2726;', 'Napisy AI', () => aiCaptions(null)),
+      tool('&#x1F399;&#xFE0E;', 'Nagraj głos', voiceOver),
+      tool('&#x1F4F7;&#xFE0E;', 'Kamera', () => openCamera(false)),
+      tool('&#x25A3;', 'Klatka /<br>okładka', sheetCover),
     );
     return;
   }
   const isMedia = c.track !== 'text'; const m = mediaOf(c); const isVis = c.track !== 'audio';
   tb.append(tool('&#x2702;', 'Podziel', splitAtPlayhead));
+  if (isMedia && isVis) tb.append(tool('&#x2726;', 'AI', sheetAI, 'ai'));
+  else if (isMedia && m && m.type !== 'image') tb.append(tool('&#x2726;', 'AI', sheetAI, 'ai'));
   if (c.track === 'text') tb.append(tool('&#x270E;', 'Edytuj', sheetText));
   if (isMedia && m && m.type !== 'image') tb.append(tool('&#x23E9;', 'Prędkość', sheetSpeed));
   if (isMedia && m && m.type !== 'image') tb.append(tool('&#x1F50A;', 'Głośność', sheetVolume));
@@ -733,6 +754,7 @@ function pickMime() {
 }
 $('#btnExport').onclick = () => {
   if (!totalDur()) return toast('Dodaj najpierw klipy');
+  if (P.photo) return exportPNG(P.name + '.png', 2048);
   if (!window.MediaRecorder || !canvas.captureStream) return toast('Eksport nie jest obsługiwany w tej przeglądarce');
   $('#exportSetup').hidden = false; $('#exportRun').hidden = true; $('#exportModal').classList.add('open');
 };
@@ -829,8 +851,9 @@ async function openProject(p) {
 async function listProjects() {
   let ps = []; try { ps = await DB.all('projects'); } catch (e) {}
   ps.sort((a, b) => b.updated - a.updated);
-  const list = $('#projectList'); list.innerHTML = ''; $('#noProjects').hidden = ps.length > 0;
-  for (const p of ps) {
+  $('#noProjects').hidden = ps.length > 0; $('#noRecent').hidden = ps.length > 0;
+  const lists = [[$('#projectList'), ps], [$('#recentList'), ps.slice(0, 6)]];
+  for (const [list, arr] of lists) { list.innerHTML = ''; for (const p of arr) {
     const d = document.createElement('div'); d.className = 'pcard';
     const dur = p.clips.reduce((m, c) => Math.max(m, c.start + c.dur), 0);
     d.innerHTML = `<div class="thumb"></div><div class="meta"><b></b><span class="muted small"></span></div><button class="del" title="Usuń">&#x2715;</button>`;
@@ -840,7 +863,7 @@ async function listProjects() {
     $('.del', d).onclick = async () => { if (!confirm('Usunąć projekt „' + p.name + '”?')) return;
       for (const m of p.media) await DB.del('blobs', m.id).catch(() => {}); await DB.del('projects', p.id).catch(() => {}); listProjects(); };
     list.appendChild(d);
-  }
+  } }
 }
 
 function showScreen(id) { $$('.screen').forEach(s => s.classList.toggle('active', s.id === id)); }
@@ -848,9 +871,13 @@ function refresh() { refreshTimeline(); buildToolbar(); }
 
 /* ---------------- Wiring ---------------- */
 function startNew(aspect) { openProject(newProject(aspect)).then(() => { save(); $('#fileMedia').click(); }); }
+async function newWith(files, aspect = '9:16', opts = {}) {
+  const p = newProject(aspect); Object.assign(p, opts); await openProject(p);
+  const clips = await importFiles(files); save(); return clips;
+}
 $('#newProject').onclick = () => startNew('9:16');
 $$('.qa').forEach(b => b.onclick = () => startNew(b.dataset.aspect));
-$('#btnBack').onclick = () => { setPlaying(false); for (const el of els.values()) el.pause(); save(); setTimeout(listProjects, 700); showScreen('home'); };
+$('#btnBack').onclick = () => { setPlaying(false); for (const el of els.values()) el.pause(); save(); setTimeout(listProjects, 700); showScreen('home'); canvas.classList.remove('checker'); };
 $('#projName').onchange = save;
 $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
 $('#btnPlay').onclick = () => setPlaying(!playing);
@@ -893,7 +920,565 @@ if (isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
 }
 window.addEventListener('beforeunload', () => { if (P) DB.put('projects', JSON.parse(JSON.stringify(P))).catch(() => {}); });
 
-window.ClipForge = { get project() { return P; }, importFiles, seek, setPlaying, splitAtPlayhead, addText, undo, redo, get time() { return t; } };
+/* =====================================================================
+ *  AI tools, home tools grid, templates, Lab AI, camera, collage
+ * ===================================================================== */
+const AIx = () => window.CFAI;
+function aiReady() {
+  if (AIx()) return Promise.resolve(AIx());
+  return new Promise(res => window.addEventListener('cfai-ready', () => res(AIx()), { once: true }));
+}
+
+/* ---------- generic modal ---------- */
+const tm = { el: $('#toolModal'), title: $('#tmTitle'), body: $('#tmBody'), row: $('#tmRow') };
+function modal(title, build, buttons = [['Zamknij', null]]) {
+  tm.title.textContent = title; tm.body.innerHTML = ''; tm.row.innerHTML = '';
+  build && build(tm.body);
+  for (const [label, fn, cls] of buttons) {
+    const b = document.createElement('button'); b.className = cls || 'ghost'; b.textContent = label;
+    b.onclick = async () => { if (fn) { const r = await fn(); if (r === false) return; } closeModal(); }; tm.row.appendChild(b);
+  }
+  tm.el.classList.add('open');
+}
+function closeModal() { tm.el.classList.remove('open'); }
+function progress(title, msg) {
+  modal(title, b => { b.innerHTML = `<div class="spinner"></div><div class="progress"><div class="pbar" style="height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div></div><p class="muted center pmsg"></p>`; }, []);
+  const bar = $('.pbar', tm.body), m = $('.pmsg', tm.body); m.textContent = msg || '';
+  return { set(p, txt) { if (p != null) bar.style.width = Math.round(clamp(p, 0, 1) * 100) + '%'; if (txt) m.textContent = txt; }, done: closeModal };
+}
+function pickFiles(accept, multiple = true) {
+  return new Promise(res => {
+    const inp = $('#filePick'); inp.accept = accept; inp.multiple = multiple; inp.value = '';
+    inp.onchange = () => res([...inp.files]); inp.click();
+  });
+}
+async function withVision(msg = 'Ładowanie silników AI…') {
+  const A = await aiReady(); if (A.status.vision === 'ready') return A;
+  const pr = progress('Silniki AI', msg); pr.set(0.3);
+  try { await A.loadVision(); pr.done(); return A; } catch (e) { pr.done(); toast('Nie udało się uruchomić AI: ' + e.message, 5000); throw e; }
+}
+function frameOf(c) {
+  const s = sourceOf(c); if (s && s.w) return s;
+  const m = mediaOf(c); const mm = m && media.get(m.id); return mm && mm.img ? { el: mm.img, w: m.w, h: m.h } : null;
+}
+async function frameReady(c) {
+  seek(clamp(t, c.start, c.start + c.dur - 0.05)); for (let i = 0; i < 30; i++) { const f = frameOf(c); if (f) return f; await new Promise(r => setTimeout(r, 100)); }
+  return null;
+}
+
+/* ---------- AI actions on a clip ---------- */
+async function aiAction(id, c) {
+  c = c || selClip() || mainClips()[0]; if (!c && id !== 'captions') return toast('Najpierw dodaj klip');
+  const m = c && mediaOf(c); const mm = m && media.get(m.id);
+  if (!c.ai) c.ai = { bg: 'none', style: 'none', retouch: { smooth: 0, bright: 0, eyes: 0 } };
+  if (!c.ai.retouch) c.ai.retouch = { smooth: 0, bright: 0, eyes: 0 };
+  switch (id) {
+    case 'bgremove': case 'bgblur': case 'bgcolor': case 'bgreplace': {
+      await withVision(); commit();
+      c.ai.bg = { bgremove: 'remove', bgblur: 'blur', bgcolor: 'color', bgreplace: 'replace' }[id];
+      if (P.photo) { c.ai.hq = true; const pr = progress('Silniki AI', 'Ładowanie modelu wysokiej jakości…'); try { await AIx().loadHQ(); } catch (e) {} pr.done(); }
+      if (id === 'bgremove' && P.photo) { P.bg = 'transparent'; canvas.classList.add('checker'); }
+      save(); refresh(); toast({ bgremove: 'Tło usunięte (AI segmentacja)', bgblur: 'Tło rozmyte', bgcolor: 'Kolor tylko na osobie', bgreplace: 'Tło zamienione' }[id]);
+      if (id === 'bgreplace') sheetAI(); break;
+    }
+    case 'retouch': {
+      await withVision(); commit(); const r = c.ai.retouch; if (!r.smooth && !r.bright && !r.eyes) Object.assign(r, { smooth: 0.6, bright: 0.35, eyes: 0.4 });
+      save(); select(c.id); sheetRetouch(); break;
+    }
+    case 'enhance': {
+      const f = await frameReady(c); if (!f) return toast('Brak klatki do analizy');
+      const A = await aiReady(); const e = A.autoEnhance(f.el); commit();
+      Object.assign(c.adj, { b: e.b, c: e.c, s: e.s, temp: e.temp }); save(); toast(`Ulepszono: jasność ${Math.round((e.b - 1) * 100)}, kontrast ${Math.round((e.c - 1) * 100)}, nasycenie ${Math.round((e.s - 1) * 100)}`, 3500); break;
+    }
+    case 'lighting': {
+      const f = await frameReady(c); if (!f) return toast('Brak klatki do analizy');
+      const A = await withVision(); const r = await A.smartLighting(f.el, f.w, f.h); commit();
+      c.adj.b = +r.b.toFixed(2); c.ai.light = r.light || null; save();
+      toast(r.found ? 'Doświetlono twarz (wykryto twarz)' : 'Nie wykryto twarzy — skorygowano ekspozycję', 3500); break;
+    }
+    case 'styles': select(c.id); sheetStyles(); break;
+    case 'silence': {
+      if (!m || m.type === 'image' || !mm) return toast('Wybierz klip wideo lub audio');
+      const pr = progress('Przycięcie AI', 'Analiza ścieżki dźwiękowej…'); pr.set(0.2);
+      try {
+        const A = await aiReady(); const { ranges } = await A.detectSpeech(mm.blob); pr.set(0.9);
+        const a0 = c.in, a1 = c.in + c.dur * c.speed;
+        const keep = ranges.map(([a, b]) => [Math.max(a, a0), Math.min(b, a1)]).filter(([a, b]) => b - a > 0.15);
+        pr.done();
+        if (!keep.length) return toast('Nie znaleziono fragmentów z dźwiękiem');
+        const removed = (a1 - a0) - keep.reduce((s, [a, b]) => s + b - a, 0);
+        if (removed < 0.2) return toast('Brak pauz do wycięcia');
+        commit(); const idx = P.clips.indexOf(c);
+        const parts = keep.map(([a, b], i) => Object.assign(JSON.parse(JSON.stringify(c)), { id: uid(), in: a, dur: (b - a) / c.speed, start: c.track === 'main' ? 0 : c.start + (a - a0) / c.speed, transition: i ? 'none' : c.transition }));
+        if (c.track !== 'main') { let st = c.start; for (const p of parts) { p.start = st; st += p.dur; } }
+        P.clips.splice(idx, 1, ...parts); syncEls(); layoutMain(); sel = parts[0].id; refresh(); save();
+        toast(`Wycięto ${removed.toFixed(1)} s ciszy (${parts.length} fragmentów)`, 4000);
+      } catch (e) { pr.done(); toast('Błąd analizy: ' + e.message, 5000); }
+      break;
+    }
+    case 'reframe': {
+      if (!m || m.type !== 'video') return toast('Wybierz klip wideo');
+      const A = await withVision(); const pr = progress('Inteligentne kadrowanie', 'Śledzenie twarzy i obiektu…');
+      try {
+        const track = await A.reframeTrack(mm.url, m.duration, p => pr.set(p)); pr.done(); commit();
+        if (m.w > m.h && P.aspect !== '9:16') P.aspect = '9:16';
+        c.reframe = track; c.fit = 'cover'; save(); refresh(); toast('Kadr podąża za twarzą (format 9:16)', 3500);
+      } catch (e) { pr.done(); toast('Błąd: ' + e.message, 5000); }
+      break;
+    }
+    case 'captions': return aiCaptions(c);
+    case 'transcribe': return aiTranscribe(c);
+  }
+}
+
+function sheetAI() {
+  const c = selClip(); if (!c) return; const m = mediaOf(c); const isVid = m && m.type === 'video', isAud = m && m.type === 'audio';
+  openSheet('Narzędzia AI', b => {
+    const grid = document.createElement('div'); grid.className = 'tool-grid';
+    const add = (id, label, icon) => { const x = document.createElement('button'); x.className = 'tbtn'; x.innerHTML = `<span class="ic ai">${ICON(icon)}</span>${label}`; x.onclick = () => aiAction(id, c); grid.appendChild(x); };
+    if (!isAud) {
+      add('bgremove', 'Usuń tło', 'bg'); add('bgblur', 'Rozmyj tło', 'blur'); add('bgcolor', 'Kolor na osobie', 'splash'); add('bgreplace', 'Zamień tło', 'swap');
+      add('retouch', 'Retusz', 'face'); add('enhance', 'Auto ulepszanie', 'wand'); add('lighting', 'Inteligentne oświetlenie', 'sun'); add('styles', 'Efekty AI', 'magic');
+    }
+    if (isVid) add('reframe', 'Inteligentne kadrowanie', 'crop');
+    if (isVid || isAud) { add('silence', 'Przycięcie AI (cisza)', 'cut'); add('captions', 'Automatyczne napisy', 'cc'); add('transcribe', 'Transkrypcja', 'lines'); }
+    b.appendChild(grid);
+    if (c.ai && c.ai.bg && c.ai.bg !== 'none') {
+      heading(b, 'Tło: ' + { remove: 'usunięte', blur: 'rozmyte', color: 'kolor na osobie', replace: 'zamienione' }[c.ai.bg]);
+      if (c.ai.bg === 'blur') range(b, 'Siła rozmycia', c.ai.bgAmount || 1, 0.3, 3, 0.05, v => c.ai.bgAmount = v);
+      if (c.ai.bg === 'replace') { const sw = document.createElement('div'); sw.className = 'chips';
+        for (const col of ['#00b140', '#ffffff', '#000000', '#7c5cff', '#ff4d6d', '#4cc9f0', '#ffd166']) { const s = document.createElement('button'); s.className = 'swatch'; s.style.background = col; s.onclick = () => { once(); c.ai.bgColor = col; }; sw.appendChild(s); }
+        b.appendChild(sw); }
+      const off = document.createElement('button'); off.className = 'chip'; off.style.marginTop = '8px'; off.textContent = 'Przywróć tło';
+      off.onclick = () => { once(); c.ai.bg = 'none'; if (P.bg === 'transparent') { P.bg = '#000000'; canvas.classList.remove('checker'); } sheetAI(); }; b.appendChild(off);
+    }
+    heading(b, 'Wszystkie modele działają lokalnie na urządzeniu — nic nie jest wysyłane do internetu.');
+  });
+}
+function sheetRetouch() {
+  const c = selClip(); const r = c.ai.retouch;
+  openSheet('Retusz AI', b => {
+    range(b, 'Wygładzanie', r.smooth, 0, 1, 0.01, v => r.smooth = v, v => Math.round(v * 100));
+    range(b, 'Rozjaśnienie', r.bright, 0, 1, 0.01, v => r.bright = v, v => Math.round(v * 100));
+    range(b, 'Wyraziste oczy', r.eyes, 0, 1, 0.01, v => r.eyes = v, v => Math.round(v * 100));
+    heading(b, 'Model 478 punktów twarzy wyznacza skórę (bez oczu, brwi i ust) w każdej klatce.');
+  });
+}
+const STYLES = [['none', 'Brak'], ['cartoon', 'Kreskówka'], ['comic', 'Komiks'], ['sketch', 'Szkic'], ['neon', 'Neon'], ['pixel', 'Piksele'], ['thermal', 'Termowizja']];
+function sheetStyles() {
+  const c = selClip();
+  openSheet('Efekty AI', b => { chips(b, STYLES, c.ai.style || 'none', v => { c.ai.style = v; }); heading(b, 'Efekty liczone w czasie rzeczywistym (wykrywanie krawędzi, posteryzacja, mapy jasności).'); });
+}
+
+/* ---------- captions / transcription ---------- */
+const CAPTION_STYLES = [['classic', 'Klasyczne'], ['box', 'Etykieta'], ['yellow', 'Żółte'], ['karaoke', 'Pop']];
+function captionLangPicker(b, st) {
+  heading(b, 'Język mowy'); chips(b, [['polish', 'Polski'], ['english', 'Angielski'], ['german', 'Niemiecki'], ['ukrainian', 'Ukraiński'], ['auto', 'Wykryj']], st.lang, v => st.lang = v);
+}
+async function aiCaptions(c) {
+  const targets = c ? [c] : P.clips.filter(x => (x.track === 'main' || x.track === 'audio') && mediaOf(x) && mediaOf(x).type !== 'image' && x.volume > 0);
+  if (!targets.length) return toast('Brak klipów z dźwiękiem');
+  const A = await aiReady(); if (!A.manifest.whisper) return modal('Napisy AI', b => b.innerHTML = '<p>Ta kompilacja nie zawiera modelu mowy Whisper. Pobierz wersję z GitHub Releases (zawiera model offline).</p>');
+  const st = { lang: 'polish', style: 'classic' };
+  modal('Automatyczne napisy', b => { captionLangPicker(b, st); heading(b, 'Styl napisów'); chips(b, CAPTION_STYLES, st.style, v => st.style = v); heading(b, `Model: ${A.manifest.whisper} (offline). Pierwsze uruchomienie ładuje model do pamięci.`); },
+    [['Anuluj', null], ['Generuj', () => runCaptions(targets, st, false), 'export-btn']]);
+}
+async function aiTranscribe(c) {
+  const A = await aiReady(); if (!A.manifest.whisper) return toast('Brak modelu Whisper w tej kompilacji', 4000);
+  const st = { lang: 'polish' };
+  modal('Transkrypcja', b => captionLangPicker(b, st), [['Anuluj', null], ['Transkrybuj', () => runCaptions([c], st, true), 'export-btn']]);
+}
+async function runCaptions(targets, st, transcriptOnly) {
+  setTimeout(async () => {
+    const A = AIx(); const pr = progress('Rozpoznawanie mowy (Whisper)', 'Ładowanie modelu…'); const t0 = performance.now();
+    const tick = setInterval(() => pr.set(null, `Rozpoznawanie mowy… ${Math.round((performance.now() - t0) / 1000)} s`), 1000);
+    const all = [];
+    try {
+      for (const c of targets) {
+        const m = mediaOf(c), mm = media.get(m.id); const a0 = c.in, a1 = c.in + c.dur * c.speed;
+        const segs = await A.transcribe(mm.blob, { language: st.lang, from: a0, to: a1, onProgress: p => pr.set(p * 0.5, 'Ładowanie modelu… ' + Math.round(p * 100) + '%') });
+        for (const l of A.toCaptionLines(segs, transcriptOnly ? 1000 : 6)) {
+          const s = c.start + (l.start - a0) / c.speed, e = c.start + (l.end - a0) / c.speed;
+          if (e <= c.start || s >= c.start + c.dur) continue;
+          all.push({ start: Math.max(c.start, s), end: Math.min(c.start + c.dur, e), text: l.text });
+        }
+      }
+    } catch (e) { clearInterval(tick); pr.done(); return toast('Błąd rozpoznawania: ' + e.message, 6000); }
+    clearInterval(tick); pr.done();
+    if (!all.length) return toast('Nie rozpoznano mowy', 4000);
+    all.sort((a, b) => a.start - b.start);
+    if (transcriptOnly) return showTranscript(all);
+    addCaptionClips(all, st.style);
+  }, 50);
+}
+function addCaptionClips(lines, style) {
+  commit();
+  for (const l of lines) {
+    const T = { content: l.text, size: 48, color: '#ffffff', font: 'system-ui', bold: true, stroke: '#000000', bg: '', shadow: true, anim: 'fade', align: 'center' };
+    if (style === 'box') { T.stroke = ''; T.bg = 'rgba(0,0,0,0.65)'; T.shadow = false; }
+    if (style === 'yellow') { T.color = '#ffd166'; }
+    if (style === 'karaoke') { T.anim = 'pop'; T.font = 'Arial Black'; T.size = 54; }
+    P.clips.push({ id: uid(), track: 'text', caption: true, start: l.start, dur: Math.max(0.3, l.end - l.start), in: 0, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0, x: 0, y: P.aspect === '9:16' ? 0.28 : 0.36, scale: 1, rot: 0, opacity: 1, text: T });
+  }
+  refresh(); save(); toast(`Dodano ${lines.length} napisów`, 3000);
+}
+function showTranscript(lines) {
+  const A = AIx(); const txt = lines.map(l => l.text).join(' ');
+  modal('Transkrypcja', b => { const ta = document.createElement('textarea'); ta.value = txt; ta.style.minHeight = '220px'; b.appendChild(ta); }, [
+    ['Zapisz .txt', () => { saveFile(new Blob([$('textarea', tm.body).value], { type: 'text/plain' }), (P.name || 'transkrypcja') + '.txt'); return false; }],
+    ['Zapisz .srt', () => { saveFile(new Blob([A.toSRT(A.toCaptionLines(lines.map(l => ({ ...l })), 7))], { type: 'text/plain' }), (P.name || 'napisy') + '.srt'); return false; }],
+    ['Dodaj jako napisy', () => addCaptionClips(A.toCaptionLines(lines, 6), 'classic'), 'export-btn']]);
+}
+
+/* ---------- auto montage ---------- */
+async function autoMontage(after = []) {
+  const files = await pickFiles('video/*,image/*'); if (!files.length) return;
+  const st = { music: null, style: 'dynamic', aspect: '9:16' };
+  modal('Automatyczny montaż', b => {
+    b.insertAdjacentHTML('beforeend', `<p class="muted">Wybrano ${files.length} plików. AI oceni ujęcia (ruch, ostrość, twarze) i zmontuje je w rytm muzyki.</p>`);
+    const mb = document.createElement('button'); mb.className = 'chip'; mb.textContent = '♫ Wybierz muzykę (opcjonalnie)';
+    mb.onclick = async () => { const f = await pickFiles('audio/*', false); if (f[0]) { st.music = f[0]; mb.textContent = '♫ ' + f[0].name; mb.classList.add('on'); } }; b.appendChild(mb);
+    heading(b, 'Tempo'); chips(b, [['dynamic', 'Dynamiczne'], ['calm', 'Spokojne']], st.style, v => st.style = v);
+    heading(b, 'Format'); chips(b, [['9:16', '9:16'], ['16:9', '16:9'], ['1:1', '1:1']], st.aspect, v => st.aspect = v);
+  }, [['Anuluj', null], ['Zmontuj', () => { setTimeout(() => doMontage(files, st, after), 50); }, 'export-btn']]);
+}
+async function doMontage(files, st, after) {
+  const A = await aiReady(); const pr = progress('Automatyczny montaż', 'Import…');
+  try {
+    const p = newProject(st.aspect); p.name = 'Automontaż ' + new Date().toLocaleDateString(); await openProject(p);
+    const ms = await importFiles(files, null, true);
+    let musicMedia = null; if (st.music) musicMedia = (await importFiles([st.music], null, true))[0];
+    const items = ms.filter(m => m.type !== 'audio').map(m => ({ media: m, url: media.get(m.id).url, blob: media.get(m.id).blob }));
+    const plan = await A.planMontage(items, musicMedia ? { blob: media.get(musicMedia.id).blob, duration: musicMedia.duration } : null, { style: st.style, onProgress: (x, msg) => pr.set(x, msg) });
+    P.clips = [];
+    for (const pc of plan.clips) {
+      const m = P.media.find(x => x.id === pc.mediaId); const c = baseClip(m, 'main');
+      Object.assign(c, { in: pc.in, dur: pc.dur, transition: pc.transition, filter: FILTERS[1][1], volume: musicMedia ? 0.15 : 1, fit: 'cover' });
+      if (pc.image) c.scale = 1.08; P.clips.push(c);
+    }
+    if (musicMedia) { const mc = baseClip(musicMedia, 'audio'); const tot = plan.clips.reduce((s, c) => s + c.dur, 0); mc.in = plan.offset || 0; mc.dur = Math.min(musicMedia.duration - mc.in, tot); mc.fadeOut = 1.5; P.clips.push(mc); }
+    if (P.clips.length) { const last = mainClips().slice(-1)[0]; last.fadeOut = 0.6; }
+    undoStack = []; syncEls(); layoutMain(); refresh(); save(); seek(0); pr.done();
+    toast(`Zmontowano ${plan.clips.length} ujęć${plan.bpm ? ` · ${plan.bpm} BPM` : ''}`, 4000);
+    for (const a of after) await aiAction(a, mainClips()[0]);
+  } catch (e) { console.error(e); pr.done(); toast('Błąd montażu: ' + e.message, 6000); }
+}
+
+/* ---------- cover / frame capture ---------- */
+async function exportPNG(name, maxSide = 0, title = null) {
+  const prevSel = sel; sel = null;
+  let w = canvas.width, h = canvas.height;
+  if (maxSide) { renderRes = Math.max(480, Math.round(Math.min(maxSide, 2048) * Math.min(w, h) / Math.max(w, h))); setCanvasSize(); }
+  for (const c of P.clips) { const el = els.get(c.id); if (el && active(c, t)) await new Promise(r => { if (el.readyState >= 2 && !el.seeking) r(); else { el.addEventListener('seeked', r, { once: true }); setTimeout(r, 1500); } }); }
+  render(t);
+  if (title) drawCoverTitle(title);
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+  sel = prevSel; renderRes = 0; setCanvasSize(); render(t);
+  await saveFile(blob, name.replace(/[\\/:*?"<>|]+/g, '_'));
+}
+function drawCoverTitle(o) {
+  const W = canvas.width, H = canvas.height; const size = W / 720 * o.size;
+  ctx.save(); const g = ctx.createLinearGradient(0, H * 0.55, 0, H); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.7)'); ctx.fillStyle = g; ctx.fillRect(0, H * 0.55, W, H * 0.45);
+  ctx.font = `800 ${size}px ${o.font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  const lines = o.text.split('\n'); lines.forEach((l, i) => { const y = H * 0.8 + (i - (lines.length - 1) / 2) * size * 1.1;
+    ctx.lineWidth = size * 0.14; ctx.strokeStyle = '#000'; ctx.strokeText(l, W / 2, y); ctx.fillStyle = o.color; ctx.fillText(l, W / 2, y); });
+  ctx.restore();
+}
+function sheetCover() {
+  const o = { text: '', size: 90, color: '#ffffff', font: 'Arial Black' };
+  modal('Klatka / okładka', b => {
+    b.insertAdjacentHTML('beforeend', '<p class="muted small">Zapisuje bieżącą klatkę jako PNG. Dodaj tytuł, aby utworzyć okładkę.</p>');
+    const ta = document.createElement('textarea'); ta.placeholder = 'Tytuł okładki (opcjonalnie)'; ta.oninput = () => o.text = ta.value; b.appendChild(ta);
+    heading(b, 'Kolor tytułu'); chips(b, [['#ffffff', 'Biały'], ['#ffd166', 'Żółty'], ['#ff4d6d', 'Czerwony'], ['#22d3a6', 'Miętowy']], o.color, v => o.color = v);
+    heading(b, 'Czcionka'); chips(b, [['Arial Black', 'Gruba'], ['Georgia', 'Szeryfowa'], ['Impact', 'Impact']], o.font, v => o.font = v);
+  }, [['Anuluj', null], ['Zapisz PNG', () => exportPNG((P.name || 'klatka') + '_' + fmt(t).replace(/[:.]/g, '-') + '.png', 1920, o.text.trim() ? o : null), 'export-btn']]);
+}
+
+/* ---------- voice over ---------- */
+async function voiceOver() {
+  let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { return toast('Brak dostępu do mikrofonu', 4000); }
+  const chunks = []; const rec = new MediaRecorder(stream); const start = t; rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = async () => {
+    stream.getTracks().forEach(x => x.stop()); setPlaying(false);
+    const f = new File(chunks, 'Lektor ' + new Date().toLocaleTimeString().replace(/:/g, '-') + '.webm', { type: rec.mimeType || 'audio/webm' });
+    const prevT = t; t = start; const cl = await importFiles([f], 'audio'); t = prevT; if (cl[0]) { cl[0].start = start; refresh(); save(); }
+  };
+  modal('Nagrywanie głosu', b => b.innerHTML = '<div class="spinner"></div><p class="center">Nagrywanie… Wideo jest odtwarzane, abyś mógł mówić do obrazu.</p>', [['Zatrzymaj', () => rec.stop(), 'export-btn']]);
+  rec.start(); setPlaying(true);
+}
+
+/* ---------- camera + teleprompter ---------- */
+const cam = { stream: null, rec: null, facing: 'user', chunks: [], t0: 0, intoProject: false, prompter: false, text: '', speed: 40, pos: 0 };
+async function openCamera(intoProject, prompter = false) {
+  cam.intoProject = intoProject && !!P; cam.prompter = prompter;
+  showScreen('camera'); await startCam();
+  $('#prompter').hidden = !prompter; if (prompter && !cam.text) editPrompter(); else setPrompter();
+}
+async function startCam() {
+  if (cam.stream) cam.stream.getTracks().forEach(x => x.stop());
+  try { cam.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: cam.facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true }); }
+  catch (e) { toast('Brak dostępu do kamery: ' + e.message, 4000); closeCamera(); return; }
+  const v = $('#camVideo'); v.srcObject = cam.stream; v.classList.toggle('mirror', cam.facing === 'user'); v.play().catch(() => {});
+}
+function closeCamera() {
+  if (cam.rec && cam.rec.state !== 'inactive') cam.rec.stop();
+  if (cam.stream) cam.stream.getTracks().forEach(x => x.stop()); cam.stream = null;
+  showScreen(cam.intoProject ? 'editor' : 'home');
+}
+function setPrompter() { $('#prompterText').textContent = cam.text || 'Dotknij „Teleprompter”, aby wpisać tekst.'; cam.pos = 0; $('#prompterText').style.transform = 'translateY(0)'; }
+function editPrompter() {
+  modal('Teleprompter', b => {
+    const ta = document.createElement('textarea'); ta.value = cam.text; ta.placeholder = 'Wklej lub wpisz tekst do przeczytania…'; ta.style.minHeight = '160px'; ta.oninput = () => cam.text = ta.value; b.appendChild(ta);
+    range(b, 'Prędkość', cam.speed, 10, 120, 1, v => cam.speed = v);
+  }, [['Ukryj', () => { cam.prompter = false; $('#prompter').hidden = true; }], ['Gotowe', () => { cam.prompter = true; $('#prompter').hidden = false; setPrompter(); }, 'export-btn']]);
+}
+$('#camClose').onclick = closeCamera;
+$('#camFlip').onclick = () => { cam.facing = cam.facing === 'user' ? 'environment' : 'user'; startCam(); };
+$('#camPrompterBtn').onclick = editPrompter;
+$('#camRec').onclick = () => {
+  const btn = $('#camRec');
+  if (cam.rec && cam.rec.state === 'recording') { cam.rec.stop(); return; }
+  if (!cam.stream) return;
+  cam.chunks = []; const mime = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m)) || '';
+  cam.rec = new MediaRecorder(cam.stream, mime ? { mimeType: mime } : undefined);
+  cam.rec.ondataavailable = e => e.data.size && cam.chunks.push(e.data);
+  cam.rec.onstop = async () => {
+    btn.classList.remove('on'); const type = cam.rec.mimeType || 'video/webm';
+    const f = new File(cam.chunks, 'Nagranie ' + new Date().toLocaleString().replace(/[/:, ]+/g, '-') + (type.includes('mp4') ? '.mp4' : '.webm'), { type });
+    const into = cam.intoProject; closeCamera();
+    if (into) await importFiles([f]); else await newWith([f], '9:16');
+  };
+  cam.rec.start(250); cam.t0 = performance.now(); btn.classList.add('on'); setPrompter();
+  const loop = () => { if (!cam.rec || cam.rec.state !== 'recording') return; const el = (performance.now() - cam.t0) / 1000; $('#camTimer').textContent = fmt(el);
+    if (cam.prompter) { cam.pos = el * cam.speed; $('#prompterText').style.transform = `translateY(${-cam.pos}px)`; } requestAnimationFrame(loop); };
+  loop();
+};
+
+/* ---------- collage ---------- */
+const LAYOUTS = {
+  2: [[[0, 0, .5, 1], [.5, 0, .5, 1]], [[0, 0, 1, .5], [0, .5, 1, .5]]],
+  3: [[[0, 0, 1, .5], [0, .5, .5, .5], [.5, .5, .5, .5]], [[0, 0, .5, 1], [.5, 0, .5, .5], [.5, .5, .5, .5]], [[0, 0, 1 / 3, 1], [1 / 3, 0, 1 / 3, 1], [2 / 3, 0, 1 / 3, 1]]],
+  4: [[[0, 0, .5, .5], [.5, 0, .5, .5], [0, .5, .5, .5], [.5, .5, .5, .5]], [[0, 0, 1, .6], [0, .6, 1 / 3, .4], [1 / 3, .6, 1 / 3, .4], [2 / 3, .6, 1 / 3, .4]]],
+};
+function gridLayout(n) { const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols); const out = []; for (let i = 0; i < n; i++) out.push([(i % cols) / cols, Math.floor(i / cols) / rows, 1 / cols, 1 / rows]); return out; }
+async function collage() {
+  const files = (await pickFiles('image/*')).slice(0, 9); if (files.length < 2) return files.length && toast('Wybierz co najmniej 2 zdjęcia');
+  const imgs = await Promise.all(files.map(f => new Promise(r => { const i = new Image(); i.onload = () => r(i); i.onerror = () => r(null); i.src = URL.createObjectURL(f); }))).then(a => a.filter(Boolean));
+  const st = { layout: 0, aspect: '1:1', gap: 12, radius: 16, bg: '#ffffff' };
+  const layouts = () => [...(LAYOUTS[imgs.length] || []), gridLayout(imgs.length)];
+  const draw = cv => {
+    const [aw, ah] = ASPECTS[st.aspect]; const W = 1600, H = Math.round(W * ah / aw); cv.width = W; cv.height = H; const g = cv.getContext('2d');
+    g.fillStyle = st.bg; g.fillRect(0, 0, W, H); const L = layouts()[st.layout % layouts().length]; const gp = st.gap * 2;
+    L.forEach(([x, y, w, h], i) => { const im = imgs[i]; if (!im) return; const rx = x * W + gp / 2 + (x === 0 ? gp / 2 : 0), ry = y * H + gp / 2 + (y === 0 ? gp / 2 : 0);
+      const rw = w * W - gp - (x === 0 ? gp / 2 : 0) - (x + w >= 0.999 ? gp / 2 : 0) + gp / 2 * 0, rh = h * H - gp - (y === 0 ? gp / 2 : 0) - (y + h >= 0.999 ? gp / 2 : 0);
+      const k = Math.max(rw / im.width, rh / im.height); g.save(); g.beginPath(); const r = st.radius * 2;
+      g.moveTo(rx + r, ry); g.arcTo(rx + rw, ry, rx + rw, ry + rh, r); g.arcTo(rx + rw, ry + rh, rx, ry + rh, r); g.arcTo(rx, ry + rh, rx, ry, r); g.arcTo(rx, ry, rx + rw, ry, r); g.clip();
+      g.drawImage(im, rx + (rw - im.width * k) / 2, ry + (rh - im.height * k) / 2, im.width * k, im.height * k); g.restore(); });
+  };
+  modal('Kolaż', b => {
+    const cv = document.createElement('canvas'); cv.className = 'preview'; b.appendChild(cv); const re = () => draw(cv); re();
+    heading(b, 'Układ'); chips(b, layouts().map((_, i) => [i, 'Układ ' + (i + 1)]), 0, v => { st.layout = v; re(); });
+    heading(b, 'Format'); chips(b, [['1:1', '1:1'], ['4:5', '4:5'], ['9:16', '9:16'], ['16:9', '16:9']], st.aspect, v => { st.aspect = v; re(); });
+    range(b, 'Odstęp', st.gap, 0, 40, 1, v => { st.gap = v; re(); }); range(b, 'Zaokrąglenie', st.radius, 0, 60, 1, v => { st.radius = v; re(); });
+    heading(b, 'Tło'); chips(b, [['#ffffff', 'Białe'], ['#000000', 'Czarne'], ['#7c5cff', 'Fiolet'], ['#ffd166', 'Żółte']], st.bg, v => { st.bg = v; re(); });
+  }, [['Zamknij', null], ['Zapisz PNG', () => { const cv = $('canvas', tm.body); cv.toBlob(b => saveFile(b, 'Kolaz_' + Date.now() + '.png'), 'image/png'); }, 'export-btn']]);
+}
+
+/* ---------- photo editor ---------- */
+async function photoEditor(after) {
+  const f = (await pickFiles('image/*', false))[0]; if (!f) return;
+  const img = await new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = URL.createObjectURL(f); });
+  const g = (a, b) => b ? g(b, a % b) : a; const d = g(img.naturalWidth, img.naturalHeight);
+  await newWith([f], 'orig', { photo: true, customAspect: [img.naturalWidth / d, img.naturalHeight / d], name: f.name.replace(/\.[^.]+$/, '') });
+  const c = mainClips()[0]; if (c) { c.fit = 'contain'; select(c.id); }
+  toast('Tryb zdjęcia: „Eksportuj” zapisuje PNG', 3000);
+  if (after && c) await aiAction(after, c);
+}
+
+/* ---------- icons (original line icons) ---------- */
+const ICONS = {
+  montage: '<rect x="3" y="5" width="15" height="12" rx="2"/><path d="M9 9l4 2-4 2z"/><path d="M20 12l-2 4h3l-2 4"/>',
+  cc: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 10.5a2 2 0 1 0 0 3M16 10.5a2 2 0 1 0 0 3"/>',
+  lines: '<path d="M4 6h16M4 10h10M4 14h16M4 18h8"/><path d="M19 15l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>',
+  bg: '<circle cx="12" cy="9" r="3.2"/><path d="M5.5 20c1-3.6 3.6-5.5 6.5-5.5s5.5 1.9 6.5 5.5"/><path d="M3 3h3M3 3v3M21 3h-3M21 3v3"/>',
+  blur: '<circle cx="12" cy="9" r="3"/><path d="M6 20c1-3.4 3.3-5 6-5s5 1.6 6 5"/><circle cx="4" cy="6" r="1"/><circle cx="20" cy="7" r="1.3"/><circle cx="19" cy="15" r=".8"/><circle cx="4" cy="14" r="1.2"/>',
+  splash: '<circle cx="12" cy="9" r="3"/><path d="M6 20c1-3.4 3.3-5 6-5s5 1.6 6 5"/><path d="M3 21L21 3"/>',
+  swap: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 14l3-3 2 2 3-4 3 5"/><circle cx="8" cy="8" r="1.4"/>',
+  face: '<path d="M7 4.5A8 8 0 1 0 19 8"/><circle cx="9.5" cy="11" r=".6"/><circle cx="14.5" cy="11" r=".6"/><path d="M9.5 15c1.4 1.2 3.6 1.2 5 0"/><path d="M19 2l.8 1.8L21.6 4.6l-1.8.8L19 7.2l-.8-1.8-1.8-.8 1.8-.8z"/>',
+  wand: '<path d="M4 20L15 9"/><path d="M14 4l1 2 2 1-2 1-1 2-1-2-2-1 2-1zM19 11l.7 1.3 1.3.7-1.3.7L19 15l-.7-1.3L17 13l1.3-.7z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  magic: '<path d="M5 19l2-6 4 4z"/><path d="M11 17l5-5"/><path d="M15 3l1 2.5L18.5 6.5 16 7.5 15 10l-1-2.5L11.5 6.5 14 5.5z"/><path d="M20 12l.6 1.4 1.4.6-1.4.6L20 16l-.6-1.4L18 14l1.4-.6z"/>',
+  crop: '<path d="M7 3v14h14"/><path d="M3 7h14v14"/><circle cx="12" cy="12" r="2"/>',
+  cut: '<circle cx="6" cy="18" r="2.5"/><circle cx="16" cy="18" r="2.5"/><path d="M7.5 16L17 3M14.5 16L7 5"/><path d="M19 8h2M19 11h3"/>',
+  photo: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.6"/><path d="M3 17l5-5 4 4 3-3 6 6"/>',
+  collage: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M12 11h9"/>',
+  frame: '<path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M10 9l5 3-5 3z"/>',
+  cover: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 16h8M8 13h5"/><path d="M15 6l2 2-4 4h-2v-2z"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
+  prompter: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 8h10M7 11h7M9 20h6M12 16v4"/>',
+  templates: '<rect x="4" y="3" width="11" height="18" rx="2"/><path d="M18 6v12M21 8v8"/><path d="M8 10l4 2-4 2z"/>',
+  all: '<circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/><circle cx="7" cy="17" r="3"/><circle cx="17" cy="17" r="3"/>',
+};
+const ICON = k => `<svg viewBox="0 0 24 24">${ICONS[k] || ''}</svg>`;
+
+/* ---------- tool registry ---------- */
+const pickVideoThen = (id, accept = 'video/*') => async () => { const f = await pickFiles(accept, false); if (!f.length) return; const cl = await newWith(f, '9:16'); if (cl[0]) { select(cl[0].id); await aiAction(id, cl[0]); } };
+const TOOLS = {
+  automontage: { name: 'Automatyczny montaż', icon: 'montage', ai: 1, cat: 'ai', run: () => autoMontage() },
+  captions: { name: 'Automatyczne napisy', icon: 'cc', ai: 1, cat: 'ai', run: pickVideoThen('captions', 'video/*,audio/*') },
+  retouch: { name: 'Retusz', icon: 'face', ai: 1, cat: 'ai', run: pickVideoThen('retouch', 'video/*,image/*') },
+  bgremove: { name: 'Usuń tło', icon: 'bg', ai: 1, cat: 'ai', run: pickVideoThen('bgremove', 'video/*') },
+  styles: { name: 'Efekty AI', icon: 'magic', ai: 1, cat: 'ai', run: pickVideoThen('styles', 'video/*,image/*') },
+  silence: { name: 'Przycięcie AI', icon: 'cut', ai: 1, cat: 'ai', run: pickVideoThen('silence', 'video/*,audio/*') },
+  reframe: { name: 'Inteligentne kadrowanie', icon: 'crop', ai: 1, cat: 'ai', run: pickVideoThen('reframe') },
+  enhance: { name: 'Automatyczne ulepszanie', icon: 'wand', ai: 1, cat: 'ai', run: pickVideoThen('enhance', 'video/*,image/*') },
+  lighting: { name: 'Inteligentne oświetlenie', icon: 'sun', ai: 1, cat: 'ai', run: pickVideoThen('lighting', 'video/*,image/*') },
+  transcribe: { name: 'Transkrybuj film', icon: 'lines', ai: 1, cat: 'quick', run: pickVideoThen('transcribe', 'video/*,audio/*') },
+  photo: { name: 'Edytor zdjęć AI', icon: 'photo', ai: 1, cat: 'photo', run: () => photoEditor() },
+  photobg: { name: 'Usuń tło ze zdjęcia', icon: 'bg', ai: 1, cat: 'photo', run: () => photoEditor('bgremove') },
+  photoenh: { name: 'Ulepsz zdjęcie', icon: 'wand', ai: 1, cat: 'photo', run: () => photoEditor('enhance') },
+  collage: { name: 'Kolaż', icon: 'collage', cat: 'photo', run: collage },
+  frame: { name: 'Przechwytywanie klatek', icon: 'frame', cat: 'photo', run: async () => { const f = await pickFiles('video/*', false); if (f.length) { await newWith(f); sheetCover(); } } },
+  cover: { name: 'Kreator okładek', icon: 'cover', cat: 'photo', run: async () => { const f = await pickFiles('video/*,image/*', false); if (f.length) { await newWith(f); sheetCover(); } } },
+  camera: { name: 'Aparat', icon: 'camera', cat: 'rec', run: () => openCamera(false) },
+  voice: { name: 'Nagraj', icon: 'mic', cat: 'rec', run: async () => { if (!P || !$('#editor').classList.contains('active')) { await openProject(newProject('9:16')); } voiceOver(); } },
+  teleprompter: { name: 'Teleprompter', icon: 'prompter', cat: 'rec', run: () => openCamera(false, true) },
+  templates: { name: 'Szablony', icon: 'templates', cat: 'quick', run: () => switchTab('templates') },
+};
+const CATS = [['ai', 'Generatywna i analityczna AI (offline)'], ['photo', 'Edycja zdjęć'], ['rec', 'Rób zdjęcia i nagrywaj'], ['quick', 'Szybkie działania']];
+function toolBtn(id) { const T = TOOLS[id]; const b = document.createElement('button'); b.className = 'tbtn'; b.innerHTML = `<span class="ic${T.ai ? ' ai' : ''}">${ICON(T.icon)}</span>${T.name}`; b.onclick = () => { $('#allTools').classList.remove('open'); T.run(); }; return b; }
+function buildHomeTools() {
+  const q = $('#quickTools'); q.innerHTML = '';
+  for (const id of ['automontage', 'retouch', 'captions', 'bgremove', 'styles', 'silence', 'enhance', 'collage', 'camera', 'photo', 'teleprompter']) q.appendChild(toolBtn(id));
+  const all = document.createElement('button'); all.className = 'tbtn'; all.innerHTML = `<span class="ic">${ICON('all')}</span>Wszystkie narzędzia (${Object.keys(TOOLS).length})`;
+  all.onclick = () => $('#allTools').classList.add('open'); q.appendChild(all);
+  const body = $('#allToolsBody'); body.innerHTML = '';
+  for (const [cat, title] of CATS) { const h = document.createElement('h4'); h.textContent = title; body.appendChild(h); const g = document.createElement('div'); g.className = 'tool-grid'; for (const id in TOOLS) if (TOOLS[id].cat === cat) g.appendChild(toolBtn(id)); body.appendChild(g); }
+}
+$('#allToolsClose').onclick = () => $('#allTools').classList.remove('open');
+
+/* ---------- tabs ---------- */
+function switchTab(name) {
+  $$('.bottom-nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $$('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
+  tplAnim = name === 'templates'; if (tplAnim) requestAnimationFrame(animTemplates);
+  if (name === 'ai') renderEngines();
+}
+$$('.bottom-nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+$('#photoEditor').onclick = () => photoEditor();
+
+/* ---------- templates (original designs) ---------- */
+const TEMPLATES = [
+  { id: 'countdown', name: 'Kinowe odliczanie', cat: 'Klimat', aspect: '9:16', filter: 'Retro', vig: .5, slots: [1.6, 1.6, 1.6, 1.6, 1.6], trans: ['fade'],
+    texts: [['3', 0, .6, 'pop', 220, 0, 'Impact'], ['2', .6, .6, 'pop', 220, 0, 'Impact'], ['1', 1.2, .6, 'pop', 220, 0, 'Impact']], hue: 30 },
+  { id: 'memories', name: 'Pokaz wspomnień', cat: 'Vlog', aspect: '9:16', filter: 'Sen', slots: [2, 2, 2, 2, 2, 2], trans: ['zoom', 'fade'], texts: [['Wspomnienia', 0, 2.6, 'type', 80, -.3, 'Georgia']], hue: 300 },
+  { id: 'weekend', name: 'Weekendowy vlog', cat: 'Vlog', aspect: '9:16', filter: 'Ciepły', slots: [1.4, 1.4, 1.4, 1.4, 1.4, 1.4], trans: ['slideL'], texts: [['WEEKEND', 0, 2, 'pop', 120, -.05, 'Arial Black'], ['mój vlog', .4, 1.6, 'slide', 60, .07, 'Georgia']], hue: 25 },
+  { id: 'fast', name: 'Szybkie cięcia', cat: 'Szybkie', aspect: '9:16', filter: 'Żywy', slots: Array(10).fill(.5), trans: ['spin', 'zoom', 'slideU'], texts: [['GO!', 0, 1, 'bounce', 160, 0, 'Impact']], hue: 200 },
+  { id: 'travel', name: 'W drogę', cat: 'Vlog', aspect: '9:16', filter: 'Chłodny', slots: [2, 2, 2, 2, 2], trans: ['slideU', 'fade'], texts: [['W DROGĘ', 0, 2.2, 'pop', 110, 0, 'Arial Black']], hue: 190 },
+  { id: 'noir', name: 'Rozdział pierwszy', cat: 'Klimat', aspect: '16:9', filter: 'Noir', vig: .6, slots: [2.2, 2.2, 2.2, 2.2, 2.2], trans: ['fade'], texts: [['Rozdział I', 0, 3, 'type', 90, 0, 'Georgia']], hue: 0, mono: true },
+  { id: 'neon', name: 'Neonowa noc', cat: 'Szybkie', aspect: '9:16', filter: 'Neon', slots: [1.2, 1.2, 1.2, 1.2, 1.2, 1.2], trans: ['zoom', 'blur'], texts: [['NOCNE MIASTO', 0, 2, 'pop', 90, 0, 'Arial Black', '#ff4d6d']], hue: 320 },
+  { id: 'crew', name: 'Nasza ekipa', cat: 'Tekst', aspect: '9:16', filter: 'Żywy', slots: [2, 2, 2], trans: ['slideL'], texts: [['NASZA EKIPA', 0, 2.5, 'bounce', 100, -.25, 'Arial Black', '#4cc9f0']], hue: 220 },
+  { id: 'quote', name: 'Cytat dnia', cat: 'Tekst', aspect: '1:1', filter: 'Mat', slots: [5], trans: ['fade'], texts: [['Każdy dzień\nto nowa scena', .3, 4.5, 'type', 80, 0, 'Georgia']], hue: 140 },
+];
+let tplAnim = false, tplCat = 'Wszystkie';
+function buildTemplates() {
+  const cats = ['Wszystkie', ...new Set(TEMPLATES.map(t => t.cat))]; const cw = $('#tplCats'); cw.innerHTML = '';
+  for (const c of cats) { const b = document.createElement('button'); b.className = 'chip' + (c === tplCat ? ' on' : ''); b.textContent = c; b.onclick = () => { tplCat = c; buildTemplates(); }; cw.appendChild(b); }
+  const g = $('#tplGrid'); g.innerHTML = '';
+  for (const T of TEMPLATES) {
+    if (tplCat !== 'Wszystkie' && T.cat !== tplCat) continue;
+    const d = document.createElement('button'); d.className = 'tpl'; const cv = document.createElement('canvas'); cv.width = 180; cv.height = 280; cv.dataset.tpl = T.id;
+    d.appendChild(cv); d.insertAdjacentHTML('beforeend', `<div class="meta"><b></b><br><span></span></div>`); $('b', d).textContent = T.name;
+    $('span', d).textContent = `${T.slots.length} klipów · ${T.slots.reduce((a, b) => a + b, 0).toFixed(0)} s`; d.onclick = () => applyTemplate(T.id); g.appendChild(d);
+  }
+}
+function animTemplates(ts) {
+  if (!tplAnim) return;
+  for (const cv of $$('#tplGrid canvas')) {
+    const T = TEMPLATES.find(x => x.id === cv.dataset.tpl); const g = cv.getContext('2d'); const W = cv.width, H = cv.height; const tt = (ts / 1000) % (T.slots.reduce((a, b) => a + b, 0));
+    let acc = 0, idx = 0; for (; idx < T.slots.length; idx++) { if (tt < acc + T.slots[idx]) break; acc += T.slots[idx]; }
+    const hue = (T.hue + idx * 37) % 360; const gr = g.createLinearGradient(0, 0, W, H);
+    gr.addColorStop(0, T.mono ? `hsl(0,0%,${20 + idx * 8}%)` : `hsl(${hue},70%,45%)`); gr.addColorStop(1, T.mono ? '#111' : `hsl(${(hue + 60) % 360},70%,20%)`); g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    g.fillStyle = 'rgba(255,255,255,.12)'; for (let i = 0; i < 5; i++) { g.beginPath(); g.arc((i * 53 + tt * 30) % W, H * (0.2 + 0.15 * i), 18 + i * 4, 0, 7); g.fill(); }
+    for (const [txt, s, d, anim, size, y, font, col] of T.texts) {
+      if (tt < s || tt > s + d) continue; const p = Math.min(1, (tt - s) / 0.4); const sc = anim === 'pop' ? 0.5 + 0.5 * p : 1;
+      g.save(); g.translate(W / 2, H / 2 + y * H); g.scale(sc, sc); g.globalAlpha = anim === 'fade' || anim === 'slide' ? p : 1; g.font = `700 ${size / 4}px ${font}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.lineWidth = 4; g.strokeStyle = '#000'; const shown = anim === 'type' ? txt.slice(0, Math.ceil(txt.length * Math.min(1, (tt - s) / 1.5))) : txt;
+      shown.split('\n').forEach((l, i, a) => { g.strokeText(l, 0, (i - (a.length - 1) / 2) * size / 3.6); g.fillStyle = col || '#fff'; g.fillText(l, 0, (i - (a.length - 1) / 2) * size / 3.6); }); g.restore();
+    }
+  }
+  requestAnimationFrame(animTemplates);
+}
+async function applyTemplate(id) {
+  const T = TEMPLATES.find(x => x.id === id); if (!T) return;
+  const files = await pickFiles('video/*,image/*'); if (!files.length) return;
+  const p = newProject(T.aspect); p.name = T.name; await openProject(p);
+  const ms = (await importFiles(files, null, true)).filter(m => m.type !== 'audio');
+  if (!ms.length) return;
+  P.clips = []; const fl = (FILTERS.find(f => f[0] === T.filter) || FILTERS[0])[1];
+  T.slots.forEach((d, i) => {
+    const m = ms[i % ms.length]; const c = baseClip(m, 'main'); const used = Math.floor(i / ms.length);
+    c.in = m.type === 'video' ? Math.min(Math.max(0, m.duration - d), used * d) : 0; c.dur = m.type === 'video' ? Math.min(d, m.duration) : d;
+    c.transition = i === 0 ? 'fade' : T.trans[i % T.trans.length]; c.filter = fl; c.fit = 'cover'; if (T.vig) c.adj.vig = T.vig; P.clips.push(c);
+  });
+  for (const [txt, s, d, anim, size, y, font, col] of T.texts)
+    P.clips.push({ id: uid(), track: 'text', start: s, dur: d, in: 0, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0.2, x: 0, y, scale: 1, rot: 0, opacity: 1,
+      text: { content: txt, size, color: col || '#ffffff', font, bold: true, stroke: '#000000', bg: '', shadow: true, anim, align: 'center' } });
+  undoStack = []; syncEls(); layoutMain(); refresh(); save(); seek(0); toast('Szablon zastosowany — możesz go dowolnie edytować');
+}
+
+/* ---------- Lab AI ---------- */
+const AI_QUICK = ['automontage', 'captions', 'bgremove', 'retouch', 'styles', 'enhance', 'silence', 'reframe'];
+function buildAILab() {
+  const w = $('#aiActions'); w.innerHTML = '';
+  for (const id of AI_QUICK) { const b = document.createElement('button'); b.innerHTML = ICON(TOOLS[id].icon) + TOOLS[id].name; b.onclick = TOOLS[id].run; w.appendChild(b); }
+}
+async function runCommand(text) {
+  const A = await aiReady(); const acts = A.parseCommand(text || '');
+  if (!acts.length) return toast('Nie rozpoznano polecenia. Spróbuj np. „usuń tło”, „dodaj napisy”, „zmontuj w rytm muzyki”.', 5000);
+  $('#aiCmdHint').textContent = 'Rozpoznano: ' + acts.map(a => (TOOLS[a] || {}).name || a).join(' → ');
+  const special = { collage, teleprompter: () => openCamera(false, true), camera: () => openCamera(false), voice: TOOLS.voice.run };
+  if (special[acts[0]]) return special[acts[0]]();
+  if (acts[0] === 'automontage') return autoMontage(acts.slice(1).filter(a => !special[a]));
+  const f = await pickFiles('video/*,image/*,audio/*', false); if (!f.length) return;
+  const cl = await newWith(f, acts.includes('reframe') ? '9:16' : '9:16'); const c = cl[0]; if (!c) return; select(c.id);
+  for (const a of acts) { if (special[a]) continue; await aiAction(a === 'bgblur' ? 'bgblur' : a, c); }
+}
+$('#aiCmdGo').onclick = () => runCommand($('#aiCmd').value);
+const ENGINES = [
+  ['whisper', 'Whisper — rozpoznawanie mowy', 'Napisy, transkrypcja (99 języków)', () => AIx() && AIx().manifest.whisper ? AIx().manifest.whisper + ' · ONNX q8' : 'niedołączony w tej kompilacji'],
+  ['vision', 'Segmentacja osób (wideo, czas rzeczywisty)', 'Usuwanie/rozmycie/zamiana tła', () => 'MediaPipe · 0,25 MB'],
+  ['vision', 'Segmentacja HQ (6 klas)', 'Precyzyjne tło na zdjęciach (włosy, skóra, ubrania)', () => 'MediaPipe · 16 MB'],
+  ['vision', 'Siatka twarzy 478 punktów', 'Retusz, oczy, rozjaśnienie', () => 'MediaPipe · 3,6 MB'],
+  ['vision', 'Detektor twarzy', 'Oświetlenie, kadrowanie, montaż', () => 'BlazeFace · 0,2 MB'],
+  ['dsp', 'Analiza rytmu i ciszy', 'Montaż w rytm, przycięcie pauz', () => 'Algorytm DSP'],
+  ['dsp', 'Analiza obrazu', 'Auto ulepszanie, ocena ujęć, efekty', () => 'Algorytm'],
+];
+function renderEngines() {
+  const A = AIx(); const list = $('#engineList'); list.innerHTML = '';
+  for (const [key, name, desc, info] of ENGINES) {
+    const st = key === 'dsp' ? 'ready' : A ? A.status[key] : 'idle';
+    const lbl = { idle: 'gotowy do użycia', loading: 'ładowanie…', ready: 'aktywny', error: 'błąd' }[st];
+    const d = document.createElement('div'); d.className = 'engine';
+    d.innerHTML = `<div><b></b><span class="muted small"></span></div><span class="st ${st === 'ready' ? 'ok' : st === 'error' ? 'err' : ''}"></span>`;
+    $('b', d).textContent = name; $('.muted', d).textContent = desc + ' · ' + info(); $('.st', d).textContent = key === 'whisper' && A && !A.manifest.whisper ? 'brak' : lbl; list.appendChild(d);
+  }
+  const badge = $('#aiBadge'); if (A) badge.textContent = A.manifest.whisper ? 'AI offline · 6 silników' : 'AI offline · 5 silników';
+}
+$('#engineTest').onclick = async () => {
+  const A = await aiReady(); const pr = progress('Test silników AI', 'Ładowanie modeli wizyjnych…');
+  const res = [];
+  try { await A.loadVision(); res.push(`Wizja: OK (${A.timings.visionLoad} ms)`); } catch (e) { res.push('Wizja: błąd — ' + e.message); }
+  if (A.manifest.whisper) { pr.set(0.5, 'Ładowanie Whisper…'); try { await A.loadWhisper(p => pr.set(0.5 + p * 0.5)); res.push(`Whisper: OK (${A.timings.whisperLoad} ms)`); } catch (e) { res.push('Whisper: błąd — ' + e.message); } }
+  else res.push('Whisper: niedołączony w tej kompilacji');
+  pr.done(); renderEngines(); modal('Wynik testu', b => { b.innerHTML = res.map(r => `<p>${r}</p>`).join('') + `<p class="muted small">crossOriginIsolated: ${self.crossOriginIsolated ? 'tak (wielowątkowo)' : 'nie (1 wątek)'}</p>`; });
+};
+aiReady().then(A => { A.events.addEventListener('status', renderEngines); renderEngines(); });
+
+buildHomeTools(); buildTemplates(); buildAILab();
+
+window.ClipForge = { get project() { return P; }, _doMontage: doMontage, exportPNG, collage, aiAction, newWith, openTool: id => TOOLS[id] && TOOLS[id].run(), get selected() { return sel; }, select, applyTemplate, runCommand, importFiles, seek, setPlaying, splitAtPlayhead, addText, undo, redo, get time() { return t; } };
 listProjects();
 requestAnimationFrame(tick);
 })();

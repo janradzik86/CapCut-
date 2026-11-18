@@ -10,25 +10,86 @@
 </head>
 <body>
 
-<!-- ============ HOME ============ -->
+<!-- ============ HOME (tabs) ============ -->
 <section id="home" class="screen active">
-  <header class="home-head">
-    <div class="brand"><img src="icons/icon.svg" alt=""><span>ClipForge</span></div>
-    <span class="muted small">Edytor wideo</span>
-  </header>
-  <button id="newProject" class="hero-btn">
-    <span class="plus">+</span>
-    <span><b>Nowy projekt</b><br><span class="muted small">Importuj wideo, zdjęcia i muzykę</span></span>
-  </button>
-  <div class="quick">
-    <button data-aspect="9:16" class="qa">9:16<br><span>Pion</span></button>
-    <button data-aspect="16:9" class="qa">16:9<br><span>Poziom</span></button>
-    <button data-aspect="1:1" class="qa">1:1<br><span>Kwadrat</span></button>
-    <button data-aspect="4:5" class="qa">4:5<br><span>Post</span></button>
+  <div class="tabs-body">
+    <!-- EDIT TAB -->
+    <div class="tab active" id="tab-edit">
+      <header class="home-head">
+        <div class="brand"><img src="icons/icon.svg" alt=""><span>ClipForge</span></div>
+        <span class="ai-badge" id="aiBadge" title="Silniki AI na urządzeniu">AI offline</span>
+      </header>
+      <div class="hero-row">
+        <button id="newProject" class="hero-btn"><span class="plus">+</span><span><b>Nowy projekt</b><br><span class="small">Wideo, zdjęcia, muzyka</span></span></button>
+        <button id="photoEditor" class="hero-btn alt"><span class="plus">&#x25A7;</span><span><b>Edytor zdjęć</b><br><span class="small">AI retusz i tło</span></span></button>
+      </div>
+      <div class="quick">
+        <button data-aspect="9:16" class="qa">9:16<br><span>Pion</span></button>
+        <button data-aspect="16:9" class="qa">16:9<br><span>Poziom</span></button>
+        <button data-aspect="1:1" class="qa">1:1<br><span>Kwadrat</span></button>
+        <button data-aspect="4:5" class="qa">4:5<br><span>Post</span></button>
+      </div>
+      <div class="tool-grid" id="quickTools"></div>
+      <h3 class="section-title">Ostatnie projekty</h3>
+      <div id="recentList" class="project-list"></div>
+      <p id="noRecent" class="muted center">Brak projektów. Utwórz pierwszy!</p>
+    </div>
+    <!-- TEMPLATES TAB -->
+    <div class="tab" id="tab-templates">
+      <header class="home-head"><h2>Szablony</h2></header>
+      <div class="chips" id="tplCats"></div>
+      <div class="tpl-grid" id="tplGrid"></div>
+    </div>
+    <!-- AI LAB TAB -->
+    <div class="tab" id="tab-ai">
+      <header class="home-head"><h2>Lab AI</h2><span class="muted small">100% na urządzeniu · bez internetu</span></header>
+      <div class="cmd-box">
+        <textarea id="aiCmd" placeholder="Napisz, co zrobić, np. „zmontuj w rytm muzyki i dodaj napisy”"></textarea>
+        <div class="row" style="margin-top:8px"><span class="muted small" id="aiCmdHint">Parser poleceń działa lokalnie</span><div class="spacer"></div><button class="export-btn" id="aiCmdGo">Wykonaj</button></div>
+      </div>
+      <div class="ai-actions" id="aiActions"></div>
+      <h3 class="section-title">Silniki AI w aplikacji</h3>
+      <div id="engineList" class="engine-list"></div>
+      <div class="row" style="justify-content:flex-start"><button class="ghost" id="engineTest">Uruchom test silników</button></div>
+    </div>
+    <!-- PROJECTS TAB -->
+    <div class="tab" id="tab-projects">
+      <header class="home-head"><h2>Projekty</h2></header>
+      <div id="projectList" class="project-list"></div>
+      <p id="noProjects" class="muted center">Brak projektów.</p>
+    </div>
   </div>
-  <h3 class="section-title">Moje projekty</h3>
-  <div id="projectList" class="project-list"></div>
-  <p id="noProjects" class="muted center">Brak projektów. Utwórz pierwszy!</p>
+  <nav class="bottom-nav">
+    <button data-tab="edit" class="on"><i>&#x2702;</i>Edytuj</button>
+    <button data-tab="templates"><i>&#x25A6;</i>Szablony</button>
+    <button data-tab="ai"><i>&#x2726;</i>Lab AI</button>
+    <button data-tab="projects"><i>&#x1F4C1;&#xFE0E;</i>Projekty</button>
+  </nav>
+</section>
+
+<!-- All tools overlay -->
+<div id="allTools" class="overlay-screen">
+  <h2>Wszystkie narzędzia</h2>
+  <div id="allToolsBody"></div>
+  <button class="close-round" id="allToolsClose">&#x2715;</button>
+</div>
+
+<!-- Camera / teleprompter / voice -->
+<section id="camera" class="screen">
+  <div class="cam-wrap">
+    <video id="camVideo" playsinline muted autoplay></video>
+    <div id="prompter" class="prompter" hidden><div id="prompterText"></div></div>
+    <div class="cam-top">
+      <button class="icon-btn" id="camClose">&#x2715;</button>
+      <span id="camTimer" class="tc">00:00.0</span>
+      <button class="icon-btn" id="camFlip" title="Przełącz kamerę">&#x21BB;</button>
+    </div>
+    <div class="cam-bottom">
+      <button class="ghost" id="camPrompterBtn">Teleprompter</button>
+      <button class="rec-btn" id="camRec"></button>
+      <span style="width:110px"></span>
+    </div>
+  </div>
 </section>
 
 <!-- ============ EDITOR ============ -->
@@ -103,12 +164,23 @@
   </div>
 </div>
 
+<!-- Generic modal for tools (collage, cover, AI progress, templates) -->
+<div id="toolModal" class="modal">
+  <div class="modal-card wide">
+    <h3 id="tmTitle"></h3>
+    <div id="tmBody"></div>
+    <div class="row" id="tmRow"></div>
+  </div>
+</div>
+
 <div id="toast" class="toast"></div>
 
 <input type="file" id="fileMedia" accept="video/*,image/*,audio/*" multiple hidden>
 <input type="file" id="fileAudio" accept="audio/*,video/*" multiple hidden>
 <input type="file" id="fileOverlay" accept="video/*,image/*" multiple hidden>
+<input type="file" id="filePick" multiple hidden>
 
 <script src="app.js"></script>
+<script type="module" src="ai.js"></script>
 </body>
 </html>
