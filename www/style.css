@@ -53,7 +53,7 @@ input,select{font:inherit;color:var(--text);background:var(--panel2);border:1px 
 .ruler .tick{position:absolute;top:0;height:100%;border-left:1px solid var(--line);font-size:10px;color:var(--muted);padding-left:3px}
 .track{position:relative;height:40px;margin:4px 0}
 .track.main{height:52px}
-.track-label{position:sticky;left:0;margin-left:-40px;width:36px;height:100%;display:grid;place-items:center;color:var(--muted);background:var(--bg);z-index:3;float:left}
+.track-label{cursor:pointer;position:sticky;left:0;margin-left:-40px;width:36px;height:100%;display:grid;place-items:center;color:var(--muted);background:var(--bg);z-index:3;float:left}
 .clip{position:absolute;top:0;height:100%;border-radius:6px;overflow:hidden;font-size:11px;padding:3px 10px;white-space:nowrap;cursor:grab;border:2px solid transparent;background-size:auto 100%;background-repeat:repeat-x;touch-action:none}
 .clip span{background:#0008;padding:1px 4px;border-radius:4px;position:relative;z-index:1}
 .clip.main{background-color:var(--main)} .clip.overlay{background-color:var(--overlay)}

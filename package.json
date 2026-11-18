@@ -1,18 +1,15 @@
 {
   "name": "clipforge",
   "productName": "ClipForge",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "ClipForge – darmowy edytor wideo (Android / Windows / przeglądarka)",
-  "main": "electron/main.js",
   "author": "ClipForge",
   "license": "MIT",
   "scripts": {
+    "ai:fetch": "bash scripts/fetch-ai.sh",
     "serve": "npx http-server www -p 8080",
-    "android:sync": "npx cap sync android",
     "android:release": "npx cap sync android && cd android && ./gradlew assembleRelease",
-    "electron": "electron .",
-    "win:setup": "electron-builder --win nsis --x64",
-    "win:lite": "bash windows-lite/build.sh"
+    "win:setup": "bash windows-lite/build.sh"
   },
   "dependencies": {
     "@capacitor/android": "^7.0.0",
@@ -21,45 +18,10 @@
     "@capacitor/filesystem": "^7.0.0",
     "@capacitor/share": "^7.0.0",
     "@huggingface/transformers": "^3.8.1",
-    "@mediapipe/tasks-vision": "^0.10.21"
+    "@mediapipe/tasks-vision": "^0.10.21",
+    "mediabunny": "^1.66.0"
   },
   "devDependencies": {
-    "@capacitor/cli": "^7.0.0",
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
-  },
-  "build": {
-    "appId": "app.clipforge.editor",
-    "productName": "ClipForge",
-    "directories": {
-      "output": "dist/electron"
-    },
-    "files": [
-      "electron/**",
-      "www/**",
-      "package.json"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "www/icons/icon.ico"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "artifactName": "ClipForge-Setup-${version}-electron.exe",
-      "installerIcon": "www/icons/icon.ico",
-      "uninstallerIcon": "www/icons/icon.ico",
-      "language": "1045"
-    }
+    "@capacitor/cli": "^7.0.0"
   }
 }

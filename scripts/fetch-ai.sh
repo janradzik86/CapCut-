@@ -8,6 +8,7 @@ AI=www/ai; mkdir -p $AI/lib/mediapipe $AI/models
 NM=node_modules
 cp $NM/@huggingface/transformers/dist/transformers.min.js $AI/lib/transformers.min.js
 cp $NM/@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.{mjs,wasm} $AI/lib/
+cp $NM/mediabunny/dist/bundles/mediabunny.min.mjs $AI/lib/
 cp $NM/@mediapipe/tasks-vision/vision_bundle.mjs $AI/lib/mediapipe/
 cp $NM/@mediapipe/tasks-vision/wasm/vision_wasm_internal.{js,wasm} $AI/lib/mediapipe/
 cp $NM/@mediapipe/tasks-vision/wasm/vision_wasm_nosimd_internal.{js,wasm} $AI/lib/mediapipe/

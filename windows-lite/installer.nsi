@@ -1,7 +1,7 @@
 Unicode true
 !include "MUI2.nsh"
 !define APP "ClipForge"
-!define VER "1.0.0"
+!define VER "2.0.0"
 Name "${APP} ${VER}"
 OutFile "..\dist\ClipForge-Setup-${VER}.exe"
 InstallDir "$LOCALAPPDATA\Programs\${APP}"
@@ -19,7 +19,7 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "Polish"
 !insertmacro MUI_LANGUAGE "English"
-VIProductVersion "1.0.0.0"
+VIProductVersion "2.0.0.0"
 VIAddVersionKey /LANG=${LANG_POLISH} "ProductName" "${APP}"
 VIAddVersionKey /LANG=${LANG_POLISH} "FileDescription" "${APP} Setup"
 VIAddVersionKey /LANG=${LANG_POLISH} "FileVersion" "${VER}"
@@ -30,7 +30,7 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "build\${APP}.exe"
   SetOutPath "$INSTDIR\app"
-  File /r "..\www\*.*"
+  File /r /x "_test" "..\www\*.*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\${APP}"
   CreateShortcut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\${APP}.exe" "" "$INSTDIR\${APP}.exe" 0

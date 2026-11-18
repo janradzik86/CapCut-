@@ -146,14 +146,15 @@
     <h3>Eksport wideo</h3>
     <div id="exportSetup">
       <label>Rozdzielczość
-        <select id="expRes"><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option></select>
+        <select id="expRes"><option value="480">480p</option><option value="720">720p HD</option><option value="1080" selected>1080p Full HD</option><option value="1440">1440p 2K</option><option value="2160">2160p 4K</option></select>
       </label>
       <label>Klatki/s
-        <select id="expFps"><option>24</option><option selected>30</option><option>60</option></select>
+        <select id="expFps"><option>24</option><option>25</option><option selected>30</option><option>50</option><option>60</option></select>
       </label>
-      <label>Jakość
-        <select id="expBitrate"><option value="4">Standard</option><option value="8" selected>Wysoka</option><option value="16">Najwyższa</option></select>
+      <label>Jakość (bitrate)
+        <select id="expBitrate"><option value="4">Mniejszy plik</option><option value="8" selected>Zalecana</option><option value="16">Najwyższa</option></select>
       </label>
+      <p class="muted small" id="expInfo"></p>
       <div class="row"><button class="ghost" id="expCancel">Anuluj</button><button class="export-btn" id="expGo">Start</button></div>
     </div>
     <div id="exportRun" hidden>
